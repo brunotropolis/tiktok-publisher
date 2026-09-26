@@ -1,0 +1,5 @@
+.venv/
+.session_mrn
+*.mp4
+_*.png
+__pycache__/
