@@ -2,6 +2,8 @@
 Servico HTTP do publicador TikTok (rota cookie) para a esteira do Motor de Conteudo.
 Endpoints:
   GET  /health                      -> {"ok":true}
+  GET  /check  (header x-secret)    -> confere se o cookie de sessao ainda loga na conta
+       -> {"ok":true,"username":...} ou {"ok":false,"reason":...} (usado pelo alerta diario)
   POST /publicar {video_url, caption, visibility?, schedule?}  (header x-secret)
        -> roda publicar_tiktok.py e devolve o JSON de resultado.
 Env:
@@ -9,7 +11,7 @@ Env:
   PUBLISH_SECRET    (segredo do header x-secret) - obrigatorio
   TT_ALERT_WEBHOOK  (opcional; webhook n8n de alerta WhatsApp)
 """
-import os, json, subprocess, sys
+import os, json, subprocess, sys, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -30,6 +32,10 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.rstrip("/") == "/health":
             return self._send(200, {"ok": True, "service": "tiktok-publisher"})
+        if self.path.rstrip("/") == "/check":
+            if not SECRET or self.headers.get("x-secret") != SECRET:
+                return self._send(401, {"ok": False, "reason": "unauthorized"})
+            return self._send(200, checar_sessao())
         return self._send(404, {"ok": False, "reason": "not found"})
 
     def do_POST(self):
@@ -68,6 +74,24 @@ class H(BaseHTTPRequestHandler):
                     continue
         result["exit"] = proc.returncode
         return self._send(200 if result.get("ok") else 502, result)
+
+def checar_sessao():
+    """Pergunta ao TikTok quem esta logado com o cookie atual (sem abrir navegador)."""
+    sid = os.environ.get("TT_SESSIONID_MRN", "")
+    if not sid:
+        return {"ok": False, "reason": "TT_SESSIONID_MRN vazio"}
+    req = urllib.request.Request(
+        "https://www.tiktok.com/passport/web/account/info/?aid=1459",
+        headers={"Cookie": "sessionid=" + sid,
+                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36"})
+    try:
+        d = json.loads(urllib.request.urlopen(req, timeout=20).read() or b"{}")
+    except Exception as e:
+        return {"ok": False, "reason": f"falha ao consultar o TikTok: {e}"[:200], "rede": True}
+    dados = d.get("data") or {}
+    if d.get("message") == "success" and dados.get("username"):
+        return {"ok": True, "username": dados.get("username")}
+    return {"ok": False, "reason": "sessao expirada ou invalida", "codigo": dados.get("error_code")}
 
 def main():
     if not os.environ.get("TT_SESSIONID_MRN"):
