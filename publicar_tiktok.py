@@ -41,21 +41,30 @@ def _studio(sid):
     time.sleep(7)
     return p, b, page
 
-def find_post(page, caption):
-    """Acha a linha do post pelo caption. Retorna dict {found, privacy} ou {found:False}."""
-    return page.evaluate("""(cap) => {
-      const leaf = [...document.querySelectorAll('*')].find(e =>
-        e.children.length===0 && e.offsetParent && (e.textContent||'').trim() === cap);
-      if (!leaf) return {found:false};
-      // sobe ate a linha (que contem 'Everyone'/'Only me'/'Friends')
-      let row = leaf;
-      for (let i=0;i<12 && row;i++){ row = row.parentElement;
-        if (row && /Only me|Everyone|Friends/.test(row.innerText)) break; }
+def find_post(page, caption, desde=0):
+    """Acha o post NOVO na lista do Studio. Fonte: o id do vídeo (/video/<id>) carrega a hora da postagem
+    (id >> 32 = segundos unix) -> procura vídeo postado a partir de `desde` (início do upload - 2 min).
+    NÃO compara pela legenda: o Studio mostra a legenda cortada/com hashtags separadas e as legendas B
+    começam todas iguais (bug 09 e 12/Out: postou, mas a checagem dizia que não).
+    Retorna {found, privacy, id} ou {found:False}."""
+    return page.evaluate("""(desde) => {
+      const links = [...document.querySelectorAll('a[href*="/video/"]')];
+      let melhor = null;
+      for (const a of links) {
+        const id = (a.href.split('/video/')[1] || '').split('?')[0].split('/')[0]; if (!/^[0-9]+$/.test(id)) continue; const m = [null, id];
+        const ts = Number(BigInt(m[1]) >> 32n);
+        if (ts >= desde && (!melhor || ts > melhor.ts)) melhor = {a, ts, id: m[1]};
+      }
+      if (!melhor) return {found:false};
+      let row = melhor.a;
+      for (let i=0;i<14 && row;i++){ row = row.parentElement;
+        if (row && /Only me|Everyone|Friends|Somente eu|Todos|Amigos/.test(row.innerText)) break; }
       const txt = row ? row.innerText : '';
+      const mapa = {'Only me':'Only me','Somente eu':'Only me','Friends':'Friends','Amigos':'Friends','Everyone':'Everyone','Todos':'Everyone'};
       let priv = null;
-      for (const p of ['Only me','Friends','Everyone']) if (txt.includes(p)) { priv = p; break; }
-      return {found:true, privacy:priv};
-    }""", caption)
+      for (const k of Object.keys(mapa)) if (txt.includes(k)) { priv = mapa[k]; break; }
+      return {found:true, privacy:priv, id:melhor.id, ts:melhor.ts};
+    }""", desde)
 
 def delete_post(page, caption):
     """Apaga o post pelo caption (menu ... -> Delete -> confirm)."""
@@ -94,6 +103,7 @@ def main():
             urllib.request.urlretrieve(video, tmp.name); video = tmp.name
             print(f">> baixado: {video}")
 
+        inicio = int(time.time()) - 120  # vídeo postado a partir daqui = o nosso
         # UPLOAD em subprocesso (isola o Playwright do upload da verificacao)
         env = dict(os.environ, TT_SESSIONID_MRN=sid, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
         proc = subprocess.run(
@@ -116,7 +126,10 @@ def main():
         p=b=None
         try:
             p, b, page = _studio(sid)
-            info = find_post(page, a.caption)
+            info = find_post(page, a.caption, inicio)
+            if not info.get("found"):  # lista pode demorar a atualizar
+                time.sleep(20); page.reload(wait_until="domcontentloaded"); time.sleep(8)
+                info = find_post(page, a.caption, inicio)
             if not info.get("found"):
                 result["reason"] = "post NAO apareceu no Studio (provavel quebra de UI)"
                 alert(f"FALHA: post nao apareceu no Studio: {a.caption[:40]}")
@@ -127,7 +140,7 @@ def main():
                 result["reason"] = f"privacidade '{info.get('privacy')}' != '{want}' -> apagado={deleted}"
                 alert(f"FALHA: privacidade errada ({info.get('privacy')} != {want}), apagado={deleted}: {a.caption[:40]}")
             else:
-                result.update(ok=True, verified=True, privacy=info.get("privacy"), reason="ok, verificado no Studio")
+                result.update(ok=True, verified=True, privacy=info.get("privacy"), id=info.get("id"), reason="ok, verificado no Studio")
         finally:
             try:
                 if b: b.close()
