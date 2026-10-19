@@ -133,12 +133,28 @@ def main():
             if not info.get("found"):
                 result["reason"] = "post NAO apareceu no Studio (provavel quebra de UI)"
                 alert(f"FALHA: post nao apareceu no Studio: {a.caption[:40]}")
+            # Logo após postar o TikTok mostra "Only me" enquanto processa e depois vira o certo (bug 15-19/Out:
+            # marcava falha e tentava APAGAR post que ficou público). Reconfere a cada 30s por até ~5 min.
+            tentativas = 0
+            while info.get("found") and info.get("privacy") != want and tentativas < 10:
+                tentativas += 1
+                time.sleep(30); page.reload(wait_until="domcontentloaded"); time.sleep(8)
+                info = find_post(page, a.caption, inicio) or info
+            NIVEL = {"Only me": 0, "Friends": 1, "Everyone": 2}
+            if not info.get("found"):
+                pass
             elif info.get("privacy") != want:
-                # privacidade errada -> APAGA (seguranca) e falha
-                deleted = delete_post(page, a.caption)
                 result["privacy"] = info.get("privacy")
-                result["reason"] = f"privacidade '{info.get('privacy')}' != '{want}' -> apagado={deleted}"
-                alert(f"FALHA: privacidade errada ({info.get('privacy')} != {want}), apagado={deleted}: {a.caption[:40]}")
+                if NIVEL.get(info.get("privacy"), 0) > NIVEL.get(want, 2):
+                    # MAIS aberto que o pedido (ex.: queria só eu e saiu público) -> apaga por segurança
+                    deleted = delete_post(page, a.caption)
+                    result["reason"] = f"privacidade '{info.get('privacy')}' mais aberta que '{want}' -> apagado={deleted}"
+                    alert(f"FALHA: saiu mais aberto que o pedido ({info.get('privacy')} != {want}), apagado={deleted}: {a.caption[:40]}")
+                else:
+                    # MAIS fechado que o pedido: nunca apaga (pode ser só processamento/revisão do TikTok)
+                    result["id"] = info.get("id")
+                    result["reason"] = f"postado, mas o TikTok ainda mostra '{info.get('privacy')}' (esperado '{want}') depois de 5 min: conferir no app"
+                    alert(f"ATENÇÃO: post ainda '{info.get('privacy')}' depois de 5 min (deveria ser {want}): {a.caption[:40]}")
             else:
                 result.update(ok=True, verified=True, privacy=info.get("privacy"), id=info.get("id"), reason="ok, verificado no Studio")
         finally:
