@@ -4,18 +4,28 @@ Endpoints:
   GET  /health                      -> {"ok":true}
   GET  /check  (header x-secret)    -> confere se o cookie de sessao ainda loga na conta
        -> {"ok":true,"username":...} ou {"ok":false,"reason":...} (usado pelo alerta diario)
-  POST /publicar {video_url, caption, visibility?, schedule?}  (header x-secret)
+  GET  /check?conta=brunotropolis   -> idem para outra conta (padrao = mrn)
+  POST /publicar {video_url, caption, visibility?, schedule?, conta?}  (header x-secret)
+       conta = "mrn" (padrao, @manualdorecemnascido) ou outra com env TT_SESSIONID_<CONTA> (ex. brunotropolis)
        -> roda publicar_tiktok.py e devolve o JSON de resultado.
 Env:
   TT_SESSIONID_MRN  (cookie de sessao @manualdorecemnascido) - obrigatorio
+  TT_SESSIONID_<CONTA> (multi-conta, 26/Out; ex. TT_SESSIONID_BRUNOTROPOLIS) - opcional
   PUBLISH_SECRET    (segredo do header x-secret) - obrigatorio
   TT_ALERT_WEBHOOK  (opcional; webhook n8n de alerta WhatsApp)
 """
-import os, json, subprocess, sys, urllib.request
+import os, json, re, subprocess, sys, urllib.request, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SECRET = os.environ.get("PUBLISH_SECRET", "")
+
+def sessao(conta):
+    """sessionid da conta pedida. Sem conta (ou "mrn") = Day, como sempre. Conta desconhecida = None (nunca cai na Day)."""
+    conta = (conta or "mrn").strip().lower()
+    if not re.fullmatch(r"[a-z0-9_]{2,40}", conta):
+        return None
+    return os.environ.get("TT_SESSIONID_" + conta.upper()) or None
 
 class H(BaseHTTPRequestHandler):
     def _send(self, code, obj):
@@ -32,10 +42,12 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.rstrip("/") == "/health":
             return self._send(200, {"ok": True, "service": "tiktok-publisher"})
-        if self.path.rstrip("/") == "/check":
+        u = urllib.parse.urlparse(self.path)
+        if u.path.rstrip("/") == "/check":
             if not SECRET or self.headers.get("x-secret") != SECRET:
                 return self._send(401, {"ok": False, "reason": "unauthorized"})
-            return self._send(200, checar_sessao())
+            conta = (urllib.parse.parse_qs(u.query).get("conta") or ["mrn"])[0]
+            return self._send(200, checar_sessao(conta))
         return self._send(404, {"ok": False, "reason": "not found"})
 
     def do_POST(self):
@@ -54,10 +66,14 @@ class H(BaseHTTPRequestHandler):
         visibility = data.get("visibility", "everyone")
         if not video:
             return self._send(400, {"ok": False, "reason": "falta video_url"})
+        sid = sessao(data.get("conta"))
+        if not sid:
+            return self._send(400, {"ok": False, "reason": "conta sem sessao: " + str(data.get("conta"))[:40]})
 
         cmd = [sys.executable, os.path.join(HERE, "publicar_tiktok.py"),
                "--video", video, "--caption", caption, "--visibility", visibility]
-        env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
+        # o publicar_tiktok.py le TT_SESSIONID_MRN: passa a sessao da conta pedida por ali
+        env = dict(os.environ, TT_SESSIONID_MRN=sid, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
         try:
             proc = subprocess.run(cmd, env=env, cwd=HERE, capture_output=True,
                                   text=True, timeout=1200)
@@ -75,11 +91,11 @@ class H(BaseHTTPRequestHandler):
         result["exit"] = proc.returncode
         return self._send(200 if result.get("ok") else 502, result)
 
-def checar_sessao():
+def checar_sessao(conta="mrn"):
     """Pergunta ao TikTok quem esta logado com o cookie atual (sem abrir navegador)."""
-    sid = os.environ.get("TT_SESSIONID_MRN", "")
+    sid = sessao(conta)
     if not sid:
-        return {"ok": False, "reason": "TT_SESSIONID_MRN vazio"}
+        return {"ok": False, "reason": "sem sessao para a conta " + str(conta)[:40]}
     req = urllib.request.Request(
         "https://www.tiktok.com/passport/web/account/info/?aid=1459",
         headers={"Cookie": "sessionid=" + sid,
