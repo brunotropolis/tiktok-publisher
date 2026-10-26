@@ -1,1 +1,3 @@
 tiktok-uploader==1.2.0
+# fixo = mesma versao da imagem base (navegador ja incluso; nao baixa de novo). 26/Out
+playwright==1.63.0
