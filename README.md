@@ -30,3 +30,10 @@ Resposta: `{"ok":true,"verified":true,"privacy":"Everyone",...}`.
 Por ser automação de navegador, o TikTok pode mudar a UI e quebrar um seletor. O serviço se
 **auto-verifica** e **alerta** em vez de falhar em silêncio. Cookie vencido = renovar
 `TT_SESSIONID_MRN` (DevTools → Application → Cookies → sessionid).
+
+## Carrossel de fotos (25/Nov)
+`POST /publicar {fotos:[url,...], caption, visibility?, conta?, som?}` posta pela aba "Fotos" do TikTok Studio
+(`run_photos.py`, até 35 fotos). Título = 1ª linha da legenda (sem hashtag, até 90). Som: vazio = 1ª sugestão
+"For You" do próprio TikTok; `som:"termo"` busca; `som:"nenhum"` = sem som. Mesma trava de privacidade e mesma
+verificação no Studio do vídeo. Gotchas: `fill()` no título, Ctrl+A/Delete na descrição e remover elemento do DOM
+derrubam a página do Studio ("Something went wrong"): clicar e digitar.
