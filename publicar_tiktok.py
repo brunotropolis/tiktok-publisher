@@ -5,6 +5,7 @@ Devolve JSON na ultima linha e exit code (0 ok / 1 falha). Alerta no WhatsApp se
 
 Uso:
   python publicar_tiktok.py --video <path|url> --caption "..." [--visibility only_you|everyone] [--no-verify] [--headed]
+  python publicar_tiktok.py --fotos '["url1","url2",...]' --caption "..." [--som "termo"|nenhum]   (carrossel de fotos, 25/Nov)
 Sessionid: env TT_SESSIONID_MRN ou arquivo .session_mrn.
 """
 import sys, os, json, time, argparse, pathlib, tempfile, urllib.request, subprocess
@@ -86,34 +87,57 @@ def delete_post(page, caption):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--video", required=True, help="caminho local ou URL http(s)")
+    ap.add_argument("--video", help="caminho local ou URL http(s)")
+    ap.add_argument("--fotos", help='JSON: lista de caminhos/URLs das fotos do carrossel (ate 35)')
+    ap.add_argument("--som", default="", help="termo de busca do som (vazio = 1a sugestao For You; nenhum = sem som)")
     ap.add_argument("--caption", required=True)
     ap.add_argument("--visibility", default="only_you", choices=["only_you","everyone","friends"])
     ap.add_argument("--no-verify", action="store_true")
     ap.add_argument("--headed", action="store_true")
     a = ap.parse_args()
+    if not a.video and not a.fotos:
+        ap.error("precisa de --video ou --fotos")
 
     result = {"ok": False, "reason": None, "privacy": None, "verified": False}
     tmp = None
+    tmpdir = None
     try:
         sid = load_sid()
-        video = a.video
-        if video.startswith("http"):
-            tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False, dir=str(HERE))
-            urllib.request.urlretrieve(video, tmp.name); video = tmp.name
-            print(f">> baixado: {video}")
+        if a.fotos:
+            tmpdir = tempfile.mkdtemp(prefix="fotos_", dir=str(HERE))
+            locais = []
+            for i, f in enumerate(json.loads(a.fotos)[:35]):
+                if str(f).startswith("http"):
+                    ext = ".png" if ".png" in f.lower() else (".webp" if ".webp" in f.lower() else ".jpg")
+                    dst = os.path.join(tmpdir, f"{i+1:02d}{ext}")
+                    urllib.request.urlretrieve(f, dst); locais.append(dst)
+                else:
+                    locais.append(f)
+            lista = os.path.join(tmpdir, "lista.json")
+            json.dump(locais, open(lista, "w", encoding="utf-8"))
+            print(f">> {len(locais)} fotos baixadas")
+        else:
+            video = a.video
+            if video.startswith("http"):
+                tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False, dir=str(HERE))
+                urllib.request.urlretrieve(video, tmp.name); video = tmp.name
+                print(f">> baixado: {video}")
 
         inicio = int(time.time()) - 120  # vídeo postado a partir daqui = o nosso
         # UPLOAD em subprocesso (isola o Playwright do upload da verificacao)
-        env = dict(os.environ, TT_SESSIONID_MRN=sid, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
-        proc = subprocess.run(
-            [sys.executable, str(HERE/"run_upload.py"), video, a.caption, a.visibility,
-             ("headed" if a.headed else "headless")],
-            env=env, cwd=str(HERE), capture_output=True, text=True, timeout=900)
+        env = dict(os.environ, TT_SESSIONID_MRN=sid, PYTHONUTF8="1", PYTHONIOENCODING="utf-8", TT_SOM=a.som or "")
+        if a.fotos:
+            cmd = [sys.executable, str(HERE/"run_photos.py"), lista, a.caption, a.visibility, ("headed" if a.headed else "headless")]
+        else:
+            cmd = [sys.executable, str(HERE/"run_upload.py"), video, a.caption, a.visibility, ("headed" if a.headed else "headless")]
+        proc = subprocess.run(cmd, env=env, cwd=str(HERE), capture_output=True, text=True, timeout=900)
+        for ln in (proc.stdout or "").splitlines():
+            if ln.startswith(">> som: "):
+                result["som"] = ln[8:].strip()[:120]
         sys.stderr.write(proc.stdout[-2000:] if proc.stdout else "")
         ok = (proc.returncode == 0)
         if not ok:
-            result["reason"] = "upload_video reportou falha"
+            result["reason"] = "upload reportou falha: " + ((proc.stdout or "") + (proc.stderr or "")).strip()[-300:]
             alert(f"FALHA ao postar (upload nao concluiu): {a.caption[:40]}")
             print(json.dumps(result)); sys.exit(1)
 
@@ -170,6 +194,11 @@ def main():
         if tmp:
             try: os.unlink(tmp.name)
             except Exception: pass
+        try:
+            import shutil
+            if tmpdir: shutil.rmtree(tmpdir, ignore_errors=True)
+        except Exception:
+            pass
 
     print(json.dumps(result, ensure_ascii=False))
     sys.exit(0 if result["ok"] else 1)

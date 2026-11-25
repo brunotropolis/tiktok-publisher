@@ -7,7 +7,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --default-timeout=60 --retries 10 -r requirements.txt \
     && python -m playwright install chromium
 
-COPY server.py run_upload.py publicar_tiktok.py delete_last.py ./
+COPY server.py run_upload.py run_photos.py publicar_tiktok.py delete_last.py ./
 
 ENV PORT=8000
 EXPOSE 8000

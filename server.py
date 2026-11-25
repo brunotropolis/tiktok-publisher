@@ -6,6 +6,8 @@ Endpoints:
        -> {"ok":true,"username":...} ou {"ok":false,"reason":...} (usado pelo alerta diario)
   GET  /check?conta=brunotropolis   -> idem para outra conta (padrao = mrn)
   POST /publicar {video_url, caption, visibility?, schedule?, conta?}  (header x-secret)
+  POST /publicar {fotos:[url,...], caption, visibility?, conta?, som?}  -> carrossel de FOTOS (aba Fotos do Studio; som = termo
+       de busca, vazio = 1a sugestao "For You" do TikTok, "nenhum" = sem som). 25/Nov.
        conta = "mrn" (padrao, @manualdorecemnascido) ou outra com env TT_SESSIONID_<CONTA> (ex. brunotropolis)
        -> roda publicar_tiktok.py e devolve o JSON de resultado.
 Env:
@@ -62,16 +64,22 @@ class H(BaseHTTPRequestHandler):
             return self._send(400, {"ok": False, "reason": f"json invalido: {e}"})
 
         video = data.get("video_url") or data.get("video")
+        fotos = data.get("fotos")
         caption = data.get("caption", "")
         visibility = data.get("visibility", "everyone")
-        if not video:
-            return self._send(400, {"ok": False, "reason": "falta video_url"})
+        if fotos is not None and (not isinstance(fotos, list) or not 1 <= len(fotos) <= 35 or not all(isinstance(f, str) and f.startswith("http") for f in fotos)):
+            return self._send(400, {"ok": False, "reason": "fotos = lista de 1 a 35 URLs"})
+        if not video and not fotos:
+            return self._send(400, {"ok": False, "reason": "falta video_url ou fotos"})
         sid = sessao(data.get("conta"))
         if not sid:
             return self._send(400, {"ok": False, "reason": "conta sem sessao: " + str(data.get("conta"))[:40]})
 
-        cmd = [sys.executable, os.path.join(HERE, "publicar_tiktok.py"),
-               "--video", video, "--caption", caption, "--visibility", visibility]
+        cmd = [sys.executable, os.path.join(HERE, "publicar_tiktok.py"), "--caption", caption, "--visibility", visibility]
+        if fotos:
+            cmd += ["--fotos", json.dumps(fotos), "--som", str(data.get("som") or "")[:60]]
+        else:
+            cmd += ["--video", video]
         # o publicar_tiktok.py le TT_SESSIONID_MRN: passa a sessao da conta pedida por ali
         env = dict(os.environ, TT_SESSIONID_MRN=sid, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
         try:
